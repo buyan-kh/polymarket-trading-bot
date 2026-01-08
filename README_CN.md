@@ -2,14 +2,17 @@
 
 [English](README.md) | 简体中文
 
-一个新手友好的 Python 交易机器人，支持 Polymarket 无 Gas 交易。
+一个新手友好的 Python 交易机器人，支持 Polymarket 无 Gas 交易和实时 WebSocket 数据。
 
 ## 特性
 
 - **简单易用**：几行代码即可开始交易
 - **零 Gas 费用**：使用 Builder Program 凭证免除 Gas 费
+- **实时 WebSocket**：通过 WebSocket 实时获取订单簿更新
+- **15分钟市场**：内置支持 BTC/ETH/SOL/XRP 15分钟涨跌市场
+- **闪崩策略**：预置波动率交易策略
+- **终端界面**：实时订单簿显示，原地更新
 - **安全存储**：私钥使用 PBKDF2 + Fernet 加密保护
-- **策略框架**：内置自定义交易策略支持
 - **完整测试**：89 个单元测试覆盖所有功能
 
 ## 快速开始（5 分钟）
@@ -37,9 +40,48 @@ export POLY_SAFE_ADDRESS=0x你的Polymarket钱包地址
 ```bash
 # 运行快速入门示例
 python examples/quickstart.py
+
+# 或运行闪崩策略
+python strategies/flash_crash_strategy.py --coin BTC
 ```
 
 就这么简单！你已经准备好开始交易了。
+
+## 交易策略
+
+### 闪崩策略 (Flash Crash Strategy)
+
+监控15分钟涨跌市场的概率突然下跌，并自动执行交易。
+
+```bash
+# 使用默认设置运行（0.30 下跌阈值）
+python strategies/flash_crash_strategy.py --coin BTC
+
+# 自定义设置
+python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
+
+# 可用选项
+--coin      BTC, ETH, SOL, XRP（默认：ETH）
+--drop      下跌阈值，绝对变化值（默认：0.30）
+--size      交易金额，USDC（默认：5.0）
+--lookback  检测窗口，秒（默认：10）
+--take-profit  止盈金额（默认：0.10）
+--stop-loss    止损金额（默认：0.05）
+```
+
+**策略逻辑：**
+1. 自动发现当前15分钟市场
+2. 通过 WebSocket 实时监控订单簿价格
+3. 当概率在10秒内下跌0.30+时，买入崩盘的一方
+4. 在 +$0.10（止盈）或 -$0.05（止损）时退出
+
+### 实时订单簿界面
+
+在终端中查看实时订单簿数据：
+
+```bash
+python strategies/orderbook_tui.py --coin BTC --levels 5
+```
 
 ## 代码示例
 
@@ -89,6 +131,42 @@ async def trade():
 asyncio.run(trade())
 ```
 
+### 实时 WebSocket 数据
+
+```python
+from src.websocket_client import MarketWebSocket, OrderbookSnapshot
+import asyncio
+
+async def main():
+    ws = MarketWebSocket()
+
+    @ws.on_book
+    async def on_book_update(snapshot: OrderbookSnapshot):
+        print(f"中间价：{snapshot.mid_price:.4f}")
+        print(f"最高买价：{snapshot.best_bid:.4f}")
+        print(f"最低卖价：{snapshot.best_ask:.4f}")
+
+    await ws.subscribe(["token_id_1", "token_id_2"])
+    await ws.run()
+
+asyncio.run(main())
+```
+
+### 获取15分钟市场信息
+
+```python
+from src.gamma_client import GammaClient
+
+gamma = GammaClient()
+
+# 获取当前 BTC 15分钟市场
+market = gamma.get_market_info("BTC")
+print(f"市场：{market['question']}")
+print(f"Up代币：{market['token_ids']['up']}")
+print(f"Down代币：{market['token_ids']['down']}")
+print(f"结束时间：{market['end_date']}")
+```
+
 ### 撤销订单
 
 ```python
@@ -102,21 +180,6 @@ await bot.cancel_all_orders()
 await bot.cancel_market_orders(market="condition_id", asset_id="token_id")
 ```
 
-### 获取市场数据
-
-```python
-# 获取订单簿
-orderbook = await bot.get_order_book(token_id)
-print(f"最高买价：{orderbook['bids'][0]}")
-
-# 获取当前价格
-price = await bot.get_market_price(token_id)
-print(f"价格：{price}")
-
-# 获取你的交易历史
-trades = await bot.get_trades(limit=10)
-```
-
 ## 项目结构
 
 ```
@@ -124,10 +187,16 @@ polymarket-trading-bot/
 ├── src/                      # 核心库
 │   ├── bot.py               # TradingBot - 主接口
 │   ├── config.py            # 配置管理
-│   ├── client.py            # API 客户端
+│   ├── client.py            # API 客户端（CLOB、Relayer）
 │   ├── signer.py            # 订单签名（EIP-712）
 │   ├── crypto.py            # 私钥加密
-│   └── utils.py             # 辅助函数
+│   ├── utils.py             # 辅助函数
+│   ├── gamma_client.py      # 15分钟市场发现
+│   └── websocket_client.py  # 实时 WebSocket 客户端
+│
+├── strategies/               # 交易策略
+│   ├── flash_crash_strategy.py  # 波动率交易策略
+│   └── orderbook_tui.py     # 实时订单簿显示
 │
 ├── examples/                 # 示例代码
 │   ├── quickstart.py        # 从这里开始！
@@ -205,14 +274,23 @@ export POLY_BUILDER_API_PASSPHRASE=你的口令
 | `get_market_price(token_id)` | 获取当前市场价格 |
 | `is_initialized()` | 检查机器人是否就绪 |
 
-### 订单参数
+### MarketWebSocket 方法
 
-| 参数 | 类型 | 示例 | 说明 |
-|------|------|------|------|
-| `token_id` | str | `"123..."` | 市场结果代币 ID |
-| `price` | float | `0.65` | 价格 0-1（0.65 = 65%） |
-| `size` | float | `10.0` | 股数 |
-| `side` | str | `"BUY"` | "BUY" 或 "SELL" |
+| 方法 | 说明 |
+|------|------|
+| `subscribe(asset_ids, replace=False)` | 订阅市场数据 |
+| `run(auto_reconnect=True)` | 启动 WebSocket 连接 |
+| `disconnect()` | 关闭连接 |
+| `get_orderbook(asset_id)` | 获取缓存的订单簿 |
+| `get_mid_price(asset_id)` | 获取中间价 |
+
+### GammaClient 方法
+
+| 方法 | 说明 |
+|------|------|
+| `get_current_15m_market(coin)` | 获取当前15分钟市场 |
+| `get_market_info(coin)` | 获取市场信息含代币ID |
+| `get_all_15m_markets()` | 列出所有15分钟市场 |
 
 ## 安全性
 
@@ -245,13 +323,15 @@ pytest tests/ -v --cov=src
 | `POLY_SAFE_ADDRESS not set` | 从 polymarket.com/settings 获取 |
 | `Invalid private key` | 检查私钥是否为 64 个十六进制字符 |
 | `Order failed` | 检查是否有足够的余额 |
+| `WebSocket not connecting` | 检查网络/防火墙设置 |
 
 ## 新手学习路径
 
 1. 首先阅读 `examples/quickstart.py` - 最简单的示例
 2. 然后看 `examples/basic_trading.py` - 常用操作
 3. 研究 `src/bot.py` - 理解核心类
-4. 最后看 `examples/strategy_example.py` - 自定义策略
+4. 运行 `strategies/flash_crash_strategy.py` - 实战策略
+5. 最后看 `examples/strategy_example.py` - 自定义策略
 
 ## 贡献
 

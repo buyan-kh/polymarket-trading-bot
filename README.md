@@ -2,14 +2,17 @@
 
 English | [简体中文](README_CN.md)
 
-A beginner-friendly Python trading bot for Polymarket with gasless transactions.
+A beginner-friendly Python trading bot for Polymarket with gasless transactions and real-time WebSocket data.
 
 ## Features
 
 - **Simple API**: Just a few lines of code to start trading
 - **Gasless Transactions**: No gas fees with Builder Program credentials
+- **Real-time WebSocket**: Live orderbook updates via WebSocket
+- **15-Minute Markets**: Built-in support for BTC/ETH/SOL/XRP 15-minute Up/Down markets
+- **Flash Crash Strategy**: Pre-built strategy for volatility trading
+- **Terminal UI**: Real-time orderbook display with in-place updates
 - **Secure Key Storage**: Private keys encrypted with PBKDF2 + Fernet
-- **Strategy Framework**: Built-in support for custom trading strategies
 - **Fully Tested**: 89 unit tests covering all functionality
 
 ## Quick Start (5 Minutes)
@@ -37,9 +40,48 @@ export POLY_SAFE_ADDRESS=0xYourPolymarketSafeAddress
 ```bash
 # Run the quickstart example
 python examples/quickstart.py
+
+# Or run the Flash Crash Strategy
+python strategies/flash_crash_strategy.py --coin BTC
 ```
 
 That's it! You're ready to trade.
+
+## Trading Strategies
+
+### Flash Crash Strategy
+
+Monitors 15-minute Up/Down markets for sudden probability drops and executes trades automatically.
+
+```bash
+# Run with default settings (0.30 drop threshold)
+python strategies/flash_crash_strategy.py --coin BTC
+
+# Custom settings
+python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
+
+# Available options
+--coin      BTC, ETH, SOL, XRP (default: ETH)
+--drop      Drop threshold as absolute change (default: 0.30)
+--size      Trade size in USDC (default: 5.0)
+--lookback  Detection window in seconds (default: 10)
+--take-profit  TP in dollars (default: 0.10)
+--stop-loss    SL in dollars (default: 0.05)
+```
+
+**Strategy Logic:**
+1. Auto-discover current 15-minute market
+2. Monitor orderbook prices via WebSocket in real-time
+3. When probability drops by 0.30+ in 10 seconds, buy the crashed side
+4. Exit at +$0.10 (take profit) or -$0.05 (stop loss)
+
+### Real-time Orderbook TUI
+
+View live orderbook data in a beautiful terminal interface:
+
+```bash
+python strategies/orderbook_tui.py --coin BTC --levels 5
+```
 
 ## Code Examples
 
@@ -89,6 +131,42 @@ async def trade():
 asyncio.run(trade())
 ```
 
+### Real-time WebSocket Data
+
+```python
+from src.websocket_client import MarketWebSocket, OrderbookSnapshot
+import asyncio
+
+async def main():
+    ws = MarketWebSocket()
+
+    @ws.on_book
+    async def on_book_update(snapshot: OrderbookSnapshot):
+        print(f"Mid price: {snapshot.mid_price:.4f}")
+        print(f"Best bid: {snapshot.best_bid:.4f}")
+        print(f"Best ask: {snapshot.best_ask:.4f}")
+
+    await ws.subscribe(["token_id_1", "token_id_2"])
+    await ws.run()
+
+asyncio.run(main())
+```
+
+### Get 15-Minute Market Info
+
+```python
+from src.gamma_client import GammaClient
+
+gamma = GammaClient()
+
+# Get current BTC 15-minute market
+market = gamma.get_market_info("BTC")
+print(f"Market: {market['question']}")
+print(f"Up token: {market['token_ids']['up']}")
+print(f"Down token: {market['token_ids']['down']}")
+print(f"Ends: {market['end_date']}")
+```
+
 ### Cancel Orders
 
 ```python
@@ -102,21 +180,6 @@ await bot.cancel_all_orders()
 await bot.cancel_market_orders(market="condition_id", asset_id="token_id")
 ```
 
-### Get Market Data
-
-```python
-# Get order book
-orderbook = await bot.get_order_book(token_id)
-print(f"Best bid: {orderbook['bids'][0]}")
-
-# Get current price
-price = await bot.get_market_price(token_id)
-print(f"Price: {price}")
-
-# Get your trade history
-trades = await bot.get_trades(limit=10)
-```
-
 ## Project Structure
 
 ```
@@ -124,10 +187,16 @@ polymarket-trading-bot/
 ├── src/                      # Core library
 │   ├── bot.py               # TradingBot - main interface
 │   ├── config.py            # Configuration handling
-│   ├── client.py            # API clients
+│   ├── client.py            # API clients (CLOB, Relayer)
 │   ├── signer.py            # Order signing (EIP-712)
 │   ├── crypto.py            # Key encryption
-│   └── utils.py             # Helper functions
+│   ├── utils.py             # Helper functions
+│   ├── gamma_client.py      # 15-minute market discovery
+│   └── websocket_client.py  # Real-time WebSocket client
+│
+├── strategies/               # Trading strategies
+│   ├── flash_crash_strategy.py  # Volatility trading strategy
+│   └── orderbook_tui.py     # Real-time orderbook display
 │
 ├── examples/                 # Example code
 │   ├── quickstart.py        # Start here!
@@ -205,14 +274,23 @@ The bot will automatically use gasless mode when credentials are present.
 | `get_market_price(token_id)` | Get current market price |
 | `is_initialized()` | Check if bot is ready |
 
-### Order Parameters
+### MarketWebSocket Methods
 
-| Parameter | Type | Example | Description |
-|-----------|------|---------|-------------|
-| `token_id` | str | `"123..."` | Market outcome token ID |
-| `price` | float | `0.65` | Price 0-1 (0.65 = 65%) |
-| `size` | float | `10.0` | Number of shares |
-| `side` | str | `"BUY"` | "BUY" or "SELL" |
+| Method | Description |
+|--------|-------------|
+| `subscribe(asset_ids, replace=False)` | Subscribe to market data |
+| `run(auto_reconnect=True)` | Start WebSocket connection |
+| `disconnect()` | Close connection |
+| `get_orderbook(asset_id)` | Get cached orderbook |
+| `get_mid_price(asset_id)` | Get mid price |
+
+### GammaClient Methods
+
+| Method | Description |
+|--------|-------------|
+| `get_current_15m_market(coin)` | Get current 15-min market |
+| `get_market_info(coin)` | Get market with token IDs |
+| `get_all_15m_markets()` | List all 15-min markets |
 
 ## Security
 
@@ -245,6 +323,7 @@ pytest tests/ -v --cov=src
 | `POLY_SAFE_ADDRESS not set` | Get it from polymarket.com/settings |
 | `Invalid private key` | Check key is 64 hex characters |
 | `Order failed` | Check you have sufficient balance |
+| `WebSocket not connecting` | Check network/firewall settings |
 
 ## Contributing
 
