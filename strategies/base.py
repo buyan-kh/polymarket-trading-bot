@@ -29,7 +29,7 @@ from typing import Optional, Dict, List
 from lib.console import LogBuffer, log
 from lib.market_manager import MarketManager, MarketInfo
 from lib.price_tracker import PriceTracker
-from lib.position_manager import PositionManager
+from lib.position_manager import PositionManager, Position
 from src.bot import TradingBot
 from src.websocket_client import OrderbookSnapshot
 
@@ -39,12 +39,20 @@ class StrategyConfig:
     """Base strategy configuration."""
 
     coin: str = "ETH"
-    size: float = 5.0  # USDC size per trade
+    size: float = 5.0  # USDC size per trade (used in live mode)
     max_positions: int = 1
     take_profit: float = 0.10
     stop_loss: float = 0.05
 
+    # Paper trading
+    paper: bool = False  # Enable paper trading (no real orders)
+    paper_balance: float = 10.0  # Starting paper balance in USDC
+    bet_fraction: float = 0.10  # Fraction of balance to bet each trade
+    paper_fee: float = 0.02  # Simulated fee per trade (2%)
+
     # Market settings
+    market_duration: int = 15  # Market duration in minutes (5 or 15)
+    no_trade_seconds: int = 0  # Don't open new positions in last N seconds (0 = auto)
     market_check_interval: float = 30.0
     auto_switch_market: bool = True
 
@@ -84,6 +92,7 @@ class BaseStrategy(ABC):
             coin=config.coin,
             market_check_interval=config.market_check_interval,
             auto_switch_market=config.auto_switch_market,
+            duration_minutes=config.market_duration,
         )
 
         self.prices = PriceTracker(
@@ -100,6 +109,13 @@ class BaseStrategy(ABC):
         # State
         self.running = False
         self._status_mode = False
+
+        # Paper trading
+        self._paper_balance = config.paper_balance if config.paper else 0.0
+        self._paper_order_counter = 0
+
+        # Trade log (all completed trades)
+        self._trade_log: List[dict] = []
 
         # Logging
         self._log_buffer = LogBuffer(max_size=5)
@@ -200,6 +216,8 @@ class BaseStrategy(ABC):
         @self.market.on_market_change
         def handle_market_change(old_slug: str, new_slug: str):  # pyright: ignore[reportUnusedFunction]
             self.log(f"Market changed: {old_slug} -> {new_slug}", "warning")
+            # Close any open positions — old tokens are invalid in the new market
+            self._close_positions_on_market_change()
             self.prices.clear()
             self.on_market_change(old_slug, new_slug)
 
@@ -273,10 +291,18 @@ class BaseStrategy(ABC):
             self._print_summary()
 
     def _get_current_prices(self) -> Dict[str, float]:
-        """Get current prices from market manager."""
+        """Get current prices from market manager.
+
+        In paper mode, returns bid prices (what you'd actually sell at)
+        so TP/SL checks are realistic. In live mode, returns mid prices.
+        """
         prices = {}
         for side in ["up", "down"]:
-            price = self.market.get_mid_price(side)
+            if self.config.paper:
+                # Use bid — that's the real exit price
+                price = self.market.get_best_bid(side)
+            else:
+                price = self.market.get_mid_price(side)
             if price > 0:
                 prices[side] = price
         return prices
@@ -316,31 +342,70 @@ class BaseStrategy(ABC):
             self.log(f"No token ID for {side}", "error")
             return False
 
-        size = self.config.size / current_price
+        # No-trade zone: don't open positions near market expiry
+        if self._in_no_trade_zone():
+            self.log("Skipped: market ending soon (no-trade zone)", "warning")
+            return False
+
+        # Calculate size and fill price
+        if self.config.paper:
+            # Use the ask price — that's what you'd actually pay
+            fill_price = self.market.get_best_ask(side)
+            if fill_price <= 0 or fill_price >= 1:
+                fill_price = current_price  # fallback
+            usdc_amount = self._paper_balance * self.config.bet_fraction
+            # Deduct fee from the amount we can spend
+            usdc_after_fee = usdc_amount * (1 - self.config.paper_fee)
+            size = usdc_after_fee / fill_price
+        else:
+            fill_price = current_price
+            size = self.config.size / current_price
+
         buy_price = min(current_price + 0.02, 0.99)
 
-        self.log(f"BUY {side.upper()} @ {current_price:.4f} size={size:.2f}", "trade")
-
-        result = await self.bot.place_order(
-            token_id=token_id,
-            price=buy_price,
-            size=size,
-            side="BUY"
-        )
-
-        if result.success:
-            self.log(f"Order placed: {result.order_id}", "success")
+        if self.config.paper:
+            # Paper trade — simulate fill at ask
+            fee_paid = usdc_amount * self.config.paper_fee
+            self._paper_order_counter += 1
+            order_id = f"paper-{self._paper_order_counter}"
+            self.log(
+                f"[PAPER] BUY {side.upper()} @ {fill_price:.4f} (ask) "
+                f"size={size:.2f} (${usdc_amount:.2f} - ${fee_paid:.2f} fee) | "
+                f"Balance: ${self._paper_balance:.2f}",
+                "trade"
+            )
             self.positions.open_position(
                 side=side,
                 token_id=token_id,
-                entry_price=current_price,
+                entry_price=fill_price,
                 size=size,
-                order_id=result.order_id,
+                order_id=order_id,
             )
+            self._log_trade_stats()
             return True
         else:
-            self.log(f"Order failed: {result.message}", "error")
-            return False
+            self.log(f"BUY {side.upper()} @ {current_price:.4f} size={size:.2f}", "trade")
+
+            result = await self.bot.place_order(
+                token_id=token_id,
+                price=buy_price,
+                size=size,
+                side="BUY"
+            )
+
+            if result.success:
+                self.log(f"Order placed: {result.order_id}", "success")
+                self.positions.open_position(
+                    side=side,
+                    token_id=token_id,
+                    entry_price=current_price,
+                    size=size,
+                    order_id=result.order_id,
+                )
+                return True
+            else:
+                self.log(f"Order failed: {result.message}", "error")
+                return False
 
     async def execute_sell(self, position: Position, current_price: float) -> bool:
         """
@@ -353,31 +418,161 @@ class BaseStrategy(ABC):
         Returns:
             True if order placed
         """
+        if self.config.paper:
+            # Use bid price — that's what you'd actually get
+            fill_price = self.market.get_best_bid(position.side)
+            if fill_price <= 0:
+                fill_price = current_price  # fallback
+        else:
+            fill_price = current_price
+
         sell_price = max(current_price - 0.02, 0.01)
-        pnl = position.get_pnl(current_price)
+        pnl = position.get_pnl(fill_price)
 
-        result = await self.bot.place_order(
-            token_id=position.token_id,
-            price=sell_price,
-            size=position.size,
-            side="SELL"
-        )
+        if self.config.paper:
+            # Deduct sell fee
+            gross_proceeds = position.size * fill_price
+            fee = gross_proceeds * self.config.paper_fee
+            pnl -= fee
 
-        if result.success:
-            self.log(f"Sell order: {result.order_id} PnL: ${pnl:+.2f}", "success")
+            self._paper_balance += pnl
+            self.log(
+                f"[PAPER] SELL {position.side.upper()} @ {fill_price:.4f} (bid) "
+                f"fee: ${fee:.2f} | PnL: ${pnl:+.2f} | Balance: ${self._paper_balance:.2f}",
+                "success" if pnl >= 0 else "warning"
+            )
             self.positions.close_position(position.id, realized_pnl=pnl)
+            self._record_trade(position, fill_price, pnl)
+            self._log_trade_stats()
             return True
         else:
-            self.log(f"Sell failed: {result.message}", "error")
+            result = await self.bot.place_order(
+                token_id=position.token_id,
+                price=sell_price,
+                size=position.size,
+                side="SELL"
+            )
+
+            if result.success:
+                self.log(f"Sell order: {result.order_id} PnL: ${pnl:+.2f}", "success")
+                self.positions.close_position(position.id, realized_pnl=pnl)
+                self._record_trade(position, current_price, pnl)
+                return True
+            else:
+                self.log(f"Sell failed: {result.message}", "error")
+                return False
+
+    def _in_no_trade_zone(self) -> bool:
+        """Check if we're too close to market expiry to open new positions."""
+        market = self.market.current_market
+        if not market:
             return False
 
+        mins, secs = market.get_countdown()
+        if mins < 0:
+            return False
+
+        remaining = mins * 60 + secs
+        cutoff = self.config.no_trade_seconds
+        if cutoff == 0:
+            # Auto: 30s for 5m markets, 120s for 15m markets
+            if self.config.market_duration <= 5:
+                cutoff = 30
+            else:
+                cutoff = 120
+
+        return remaining <= cutoff
+
+    def _close_positions_on_market_change(self) -> None:
+        """Close all open positions when market changes.
+
+        Uses the last known price for each position's side.
+        Positions can't carry over — the token IDs change with each market.
+        """
+        positions = self.positions.get_all_positions()
+        if not positions:
+            return
+
+        for position in positions:
+            # Use last recorded price for this side
+            last_price = self.prices.get_current_price(position.side)
+            if last_price <= 0:
+                last_price = position.entry_price  # fallback: flat close
+
+            pnl = position.get_pnl(last_price)
+            if self.config.paper:
+                self._paper_balance += pnl
+
+            self.log(
+                f"MARKET EXPIRED: closed {position.side.upper()} @ {last_price:.4f} "
+                f"PnL: ${pnl:+.2f}",
+                "warning"
+            )
+            self.positions.close_position(position.id, realized_pnl=pnl)
+            self._record_trade(position, last_price, pnl)
+
+    def _record_trade(self, position: Position, exit_price: float, pnl: float) -> None:
+        """Record a completed trade in the trade log."""
+        hold_time = position.get_hold_time()
+        self._trade_log.append({
+            "n": len(self._trade_log) + 1,
+            "side": position.side.upper(),
+            "entry": position.entry_price,
+            "exit": exit_price,
+            "size": position.size,
+            "pnl": pnl,
+            "result": "W" if pnl >= 0 else "L",
+            "hold": hold_time,
+            "balance": self._paper_balance if self.config.paper else None,
+        })
+
+    def _log_trade_stats(self) -> None:
+        """Log current trade statistics."""
+        stats = self.positions.get_stats()
+        msg = (
+            f"Trades: {stats['trades_closed']} | "
+            f"W: {stats['winning_trades']} L: {stats['losing_trades']} | "
+            f"PnL: ${stats['total_pnl']:+.2f}"
+        )
+        if self.config.paper:
+            msg += f" | Balance: ${self._paper_balance:.2f}"
+        self.log(msg, "info")
+
     def _print_summary(self) -> None:
-        """Print session summary."""
+        """Print session summary with full trade log."""
         self._status_mode = False
         print()
         stats = self.positions.get_stats()
+
+        # Trade log table
+        if self._trade_log:
+            self.log("Trade Log:")
+            bal_hdr = "    Balance" if self.config.paper else ""
+            bal_sep = "  ----------" if self.config.paper else ""
+            self.log(f"  {'#':>3}  {'Side':4}  {'Entry':>8}  {'Exit':>8}  {'PnL':>9}  {'Hold':>6}  Result{bal_hdr}")
+            self.log(f"  {'---':>3}  {'----':4}  {'--------':>8}  {'--------':>8}  {'---------':>9}  {'------':>6}  ------{bal_sep}")
+            for t in self._trade_log:
+                hold_str = f"{t['hold']:.0f}s" if t['hold'] < 60 else f"{t['hold'] / 60:.1f}m"
+                line = (
+                    f"  {t['n']:>3}  {t['side']:4}  "
+                    f"{t['entry']:>8.4f}  {t['exit']:>8.4f}  "
+                    f"${t['pnl']:>+8.2f}  {hold_str:>6}  "
+                    f"{'  ' + t['result']:>6}"
+                )
+                if self.config.paper and t['balance'] is not None:
+                    line += f"  ${t['balance']:>9.2f}"
+                self.log(line)
+            self.log("")
+
+        # Summary
         self.log("Session Summary:")
+        if self.config.paper:
+            self.log(f"  Starting Balance: ${self.config.paper_balance:.2f}")
+            self.log(f"  Final Balance: ${self._paper_balance:.2f}")
+            net = self._paper_balance - self.config.paper_balance
+            self.log(f"  Net Return: ${net:+.2f} ({net / self.config.paper_balance * 100:+.1f}%)")
         self.log(f"  Trades: {stats['trades_closed']}")
+        self.log(f"  Wins: {stats['winning_trades']} | Losses: {stats['losing_trades']}")
         self.log(f"  Total PnL: ${stats['total_pnl']:+.2f}")
         self.log(f"  Win rate: {stats['win_rate']:.1f}%")
 

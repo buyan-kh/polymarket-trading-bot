@@ -151,6 +151,7 @@ class MarketManager:
         coin: str = "BTC",
         market_check_interval: float = 30.0,
         auto_switch_market: bool = True,
+        duration_minutes: int = 15,
     ):
         """
         Initialize market manager.
@@ -159,13 +160,15 @@ class MarketManager:
             coin: Coin symbol (BTC, ETH, SOL, XRP)
             market_check_interval: Seconds between market checks
             auto_switch_market: Auto switch when market changes
+            duration_minutes: Market duration in minutes (5 or 15)
         """
         self.coin = coin.upper()
         self.market_check_interval = market_check_interval
         self.auto_switch_market = auto_switch_market
+        self.duration_minutes = duration_minutes
 
         # Clients
-        self.gamma = GammaClient()
+        self.gamma = GammaClient(duration_minutes=duration_minutes)
         self.ws: Optional[MarketWebSocket] = None
 
         # State
@@ -366,10 +369,38 @@ class MarketManager:
         if self.ws:
             await self.ws.run(auto_reconnect=True)
 
+    def _get_sleep_duration(self) -> float:
+        """Calculate how long to sleep before next market check.
+
+        Sleeps until shortly before the current market ends, then polls
+        frequently to switch to the next market as fast as possible.
+        """
+        if not self.current_market:
+            return 2.0
+
+        mins, secs = self.current_market.get_countdown()
+        if mins < 0:
+            return self.market_check_interval
+
+        remaining = mins * 60 + secs
+
+        if remaining <= 0:
+            # Market ended — poll fast
+            return 2.0
+        elif remaining <= 10:
+            # About to end — poll every 2 seconds
+            return 2.0
+        elif remaining <= 30:
+            # Ending soon — poll every 5 seconds
+            return 5.0
+        else:
+            # Plenty of time — sleep until 15 seconds before end
+            return min(remaining - 15, self.market_check_interval)
+
     async def _market_check_loop(self) -> None:
-        """Periodically check for market changes."""
+        """Check for market changes, timing checks around market end."""
         while self._running:
-            await asyncio.sleep(self.market_check_interval)
+            await asyncio.sleep(self._get_sleep_duration())
 
             if not self._running:
                 break
@@ -397,8 +428,12 @@ class MarketManager:
             if not self._should_switch_market(old_market, market):
                 continue
 
-            # Market changed - resubscribe to new tokens
-            await self.ws.subscribe(list(new_tokens), replace=True)
+            # Market changed - unsubscribe old, subscribe new
+            if old_tokens:
+                await self.ws.unsubscribe(list(old_tokens))
+            self.ws._orderbooks.clear()
+            await self.ws.subscribe_more(list(new_tokens))
+            self.ws._subscribed_assets = set(new_tokens)
             self._update_current_market(market)
 
             # Fire market change callbacks in main thread
@@ -506,7 +541,11 @@ class MarketManager:
             return old_market
 
         if self.ws:
-            await self.ws.subscribe(list(new_tokens), replace=True)
+            if old_tokens:
+                await self.ws.unsubscribe(list(old_tokens))
+            self.ws._orderbooks.clear()
+            await self.ws.subscribe_more(list(new_tokens))
+            self.ws._subscribed_assets = set(new_tokens)
 
         self._update_current_market(market)
         return market

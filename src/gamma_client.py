@@ -28,25 +28,36 @@ class GammaClient(ThreadLocalSessionMixin):
 
     DEFAULT_HOST = "https://gamma-api.polymarket.com"
 
-    # Supported coins and their slug prefixes
-    COIN_SLUGS = {
-        "BTC": "btc-updown-15m",
-        "ETH": "eth-updown-15m",
-        "SOL": "sol-updown-15m",
-        "XRP": "xrp-updown-15m",
+    # Supported coins and their base slug names
+    COIN_BASES = {
+        "BTC": "btc-updown",
+        "ETH": "eth-updown",
+        "SOL": "sol-updown",
+        "XRP": "xrp-updown",
     }
 
-    def __init__(self, host: str = DEFAULT_HOST, timeout: int = 10):
+    # Which coins support which durations (minutes)
+    SUPPORTED_DURATIONS = {
+        "BTC": [5, 15],
+        "ETH": [15],
+        "SOL": [15],
+        "XRP": [15],
+    }
+
+    def __init__(self, host: str = DEFAULT_HOST, timeout: int = 10, duration_minutes: int = 15):
         """
         Initialize Gamma client.
 
         Args:
             host: Gamma API host URL
             timeout: Request timeout in seconds
+            duration_minutes: Market duration in minutes (5 or 15)
         """
         super().__init__()
         self.host = host.rstrip("/")
         self.timeout = timeout
+        self.duration_minutes = duration_minutes
+        self._window_seconds = duration_minutes * 60
 
     def get_market_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         """
@@ -68,27 +79,37 @@ class GammaClient(ThreadLocalSessionMixin):
         except Exception:
             return None
 
-    def get_current_15m_market(self, coin: str) -> Optional[Dict[str, Any]]:
+    def _get_slug_prefix(self, coin: str) -> str:
+        """Get slug prefix for coin and configured duration."""
+        coin = coin.upper()
+        if coin not in self.COIN_BASES:
+            raise ValueError(f"Unsupported coin: {coin}. Use: {list(self.COIN_BASES.keys())}")
+
+        supported = self.SUPPORTED_DURATIONS.get(coin, [15])
+        if self.duration_minutes not in supported:
+            raise ValueError(
+                f"{coin} does not support {self.duration_minutes}m markets. "
+                f"Supported: {supported}"
+            )
+
+        return f"{self.COIN_BASES[coin]}-{self.duration_minutes}m"
+
+    def get_current_market(self, coin: str) -> Optional[Dict[str, Any]]:
         """
-        Get the current active 15-minute market for a coin.
+        Get the current active market for a coin.
 
         Args:
             coin: Coin symbol (BTC, ETH, SOL, XRP)
 
         Returns:
-            Market data for the current 15-minute window, or None
+            Market data for the current window, or None
         """
-        coin = coin.upper()
-        if coin not in self.COIN_SLUGS:
-            raise ValueError(f"Unsupported coin: {coin}. Use: {list(self.COIN_SLUGS.keys())}")
+        prefix = self._get_slug_prefix(coin)
 
-        prefix = self.COIN_SLUGS[coin]
-
-        # Calculate current and next 15-minute window timestamps
         now = datetime.now(timezone.utc)
 
-        # Round to current 15-minute window
-        minute = (now.minute // 15) * 15
+        # Round to current window
+        minute = (now.minute // self.duration_minutes) * self.duration_minutes
         current_window = now.replace(minute=minute, second=0, microsecond=0)
         current_ts = int(current_window.timestamp())
 
@@ -100,7 +121,7 @@ class GammaClient(ThreadLocalSessionMixin):
             return market
 
         # Try next window (in case current just ended)
-        next_ts = current_ts + 900  # 15 minutes
+        next_ts = current_ts + self._window_seconds
         slug = f"{prefix}-{next_ts}"
         market = self.get_market_by_slug(slug)
 
@@ -108,7 +129,7 @@ class GammaClient(ThreadLocalSessionMixin):
             return market
 
         # Try previous window (might still be active)
-        prev_ts = current_ts - 900
+        prev_ts = current_ts - self._window_seconds
         slug = f"{prefix}-{prev_ts}"
         market = self.get_market_by_slug(slug)
 
@@ -117,25 +138,25 @@ class GammaClient(ThreadLocalSessionMixin):
 
         return None
 
-    def get_next_15m_market(self, coin: str) -> Optional[Dict[str, Any]]:
+    def get_current_15m_market(self, coin: str) -> Optional[Dict[str, Any]]:
+        """Get current 15-minute market. Kept for backward compatibility."""
+        return self.get_current_market(coin)
+
+    def get_next_market(self, coin: str) -> Optional[Dict[str, Any]]:
         """
-        Get the next upcoming 15-minute market for a coin.
+        Get the next upcoming market for a coin.
 
         Args:
             coin: Coin symbol (BTC, ETH, SOL, XRP)
 
         Returns:
-            Market data for the next 15-minute window, or None
+            Market data for the next window, or None
         """
-        coin = coin.upper()
-        if coin not in self.COIN_SLUGS:
-            raise ValueError(f"Unsupported coin: {coin}")
-
-        prefix = self.COIN_SLUGS[coin]
+        prefix = self._get_slug_prefix(coin)
         now = datetime.now(timezone.utc)
 
-        # Calculate next 15-minute window
-        minute = ((now.minute // 15) + 1) * 15
+        # Calculate next window
+        minute = ((now.minute // self.duration_minutes) + 1) * self.duration_minutes
         if minute >= 60:
             next_window = now.replace(hour=now.hour + 1, minute=0, second=0, microsecond=0)
         else:
@@ -145,6 +166,10 @@ class GammaClient(ThreadLocalSessionMixin):
         slug = f"{prefix}-{next_ts}"
 
         return self.get_market_by_slug(slug)
+
+    def get_next_15m_market(self, coin: str) -> Optional[Dict[str, Any]]:
+        """Get next 15-minute market. Kept for backward compatibility."""
+        return self.get_next_market(coin)
 
     def parse_token_ids(self, market: Dict[str, Any]) -> Dict[str, str]:
         """
@@ -212,7 +237,7 @@ class GammaClient(ThreadLocalSessionMixin):
         Returns:
             Dictionary with market info including token IDs and prices
         """
-        market = self.get_current_15m_market(coin)
+        market = self.get_current_market(coin)
         if not market:
             return None
 

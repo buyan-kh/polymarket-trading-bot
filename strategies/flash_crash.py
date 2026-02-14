@@ -69,9 +69,14 @@ class FlashCrashStrategy(BaseStrategy):
                 f"drop {event.drop:.2f} ({event.old_price:.2f} -> {event.new_price:.2f})",
                 "trade"
             )
+            # Clear price history for this side so the same crash doesn't retrigger
+            self.prices.clear(event.side)
+
             current_price = prices.get(event.side, 0)
             if current_price > 0:
                 await self.execute_buy(event.side, current_price)
+            else:
+                self.log(f"Crash detected but no price for {event.side} (bid=0?)", "warning")
 
     def render_status(self, prices: Dict[str, float]) -> None:
         """Render TUI status display."""
@@ -83,10 +88,15 @@ class FlashCrashStrategy(BaseStrategy):
         stats = self.positions.get_stats()
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
-        lines.append(
+        header = (
             f"{Colors.CYAN}[{self.config.coin}]{Colors.RESET} [{ws_status}] "
-            f"Ends: {countdown} | Trades: {stats['trades_closed']} | PnL: ${stats['total_pnl']:+.2f}"
+            f"Ends: {countdown} | Trades: {stats['trades_closed']} "
+            f"(W:{stats['winning_trades']} L:{stats['losing_trades']}) | "
+            f"PnL: ${stats['total_pnl']:+.2f}"
         )
+        if self.config.paper:
+            header += f" | {Colors.YELLOW}[PAPER] ${self._paper_balance:.2f}{Colors.RESET}"
+        lines.append(header)
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
         # Orderbook display
