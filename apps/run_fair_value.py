@@ -165,6 +165,7 @@ def main():
         paper=is_paper,
         paper_balance=args.paper if is_paper else 10.0,
         bet_fraction=args.bet_fraction,
+        live_balance=0.0,  # Auto-fetched from Polymarket on startup
         edge_threshold=args.edge,
         vol_window=args.vol_window,
         kelly_frac=args.kelly,
@@ -185,8 +186,10 @@ def main():
     if strategy_config.paper:
         print(f"  Starting Balance: ${strategy_config.paper_balance:.2f}")
         print(f"  Bet: {strategy_config.bet_fraction * 100:.0f}% of balance per trade")
+    elif strategy_config.size > 0:
+        print(f"  Size: ${strategy_config.size:.2f} (fixed)")
     else:
-        print(f"  Size: ${strategy_config.size:.2f}")
+        print(f"  Bet: {strategy_config.bet_fraction * 100:.0f}% of balance per trade (balance fetched on startup)")
     print(f"  Edge threshold: {strategy_config.edge_threshold:.2f}")
     print(f"  Vol window: {strategy_config.vol_window}s")
     print(f"  Kelly fraction: {strategy_config.kelly_frac:.2f}")

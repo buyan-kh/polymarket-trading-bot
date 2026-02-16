@@ -481,6 +481,28 @@ class ClobClient(ApiClient):
             return result.get("data", [])
         return result if isinstance(result, list) else []
 
+    def get_balance(self) -> float:
+        """
+        Get USDC balance from Polymarket account.
+
+        Returns:
+            USDC balance as float
+        """
+        endpoint = "/balance-allowance"
+        headers = self._build_headers("GET", endpoint)
+        try:
+            result = self._request(
+                "GET",
+                endpoint,
+                headers=headers,
+                params={"asset_type": "COLLATERAL"},
+            )
+            if isinstance(result, dict):
+                return float(result.get("balance", 0)) / 1e6  # USDC has 6 decimals
+            return 0.0
+        except Exception:
+            return 0.0
+
     def post_order(
         self,
         signed_order: Dict[str, Any],

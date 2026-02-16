@@ -285,6 +285,8 @@ class FairValueStrategy(BaseStrategy):
             pnl = position.get_pnl(settle_price)
             if self.config.paper:
                 self._paper_balance += pnl
+            elif self._live_balance > 0:
+                self._live_balance += position.size * settle_price
 
             result = "WON" if settle_price == 1.0 else "LOST"
             self.log(

@@ -39,7 +39,7 @@ class StrategyConfig:
     """Base strategy configuration."""
 
     coin: str = "ETH"
-    size: float = 5.0  # USDC size per trade (used in live mode)
+    size: float = 0.0  # Fixed USDC size per trade (0 = use bet_fraction instead)
     max_positions: int = 1
     take_profit: float = 0.10
     stop_loss: float = 0.05
@@ -47,8 +47,11 @@ class StrategyConfig:
     # Paper trading
     paper: bool = False  # Enable paper trading (no real orders)
     paper_balance: float = 10.0  # Starting paper balance in USDC
-    bet_fraction: float = 0.10  # Fraction of balance to bet each trade
+    bet_fraction: float = 0.10  # Fraction of balance to bet each trade (used in paper + live)
     paper_fee: float = 0.02  # Simulated fee per trade (2%)
+
+    # Live balance tracking
+    live_balance: float = 0.0  # Starting USDC balance for live % sizing
 
     # Market settings
     market_duration: int = 15  # Market duration in minutes (5 or 15)
@@ -112,6 +115,9 @@ class BaseStrategy(ABC):
 
         # Paper trading
         self._paper_balance = config.paper_balance if config.paper else 0.0
+
+        # Live balance tracking (for % sizing)
+        self._live_balance = config.live_balance
         self._paper_order_counter = 0
 
         # Trade log (all completed trades)
@@ -200,6 +206,17 @@ class BaseStrategy(ABC):
             True if started successfully
         """
         self.running = True
+
+        # Fetch live balance from Polymarket if not paper and no fixed size
+        if not self.config.paper and self.config.size <= 0 and self._live_balance <= 0:
+            self.log("Fetching USDC balance from Polymarket...", "info")
+            balance = await self.bot.get_balance()
+            if balance > 0:
+                self._live_balance = balance
+                self.log(f"Balance: ${balance:.2f} USDC", "success")
+            else:
+                self.log("Could not fetch balance. Set --size or --balance.", "error")
+                return False
 
         # Register callbacks on market manager
         @self.market.on_book_update
@@ -359,7 +376,11 @@ class BaseStrategy(ABC):
             size = usdc_after_fee / fill_price
         else:
             fill_price = current_price
-            size = self.config.size / current_price
+            if self.config.size > 0:
+                usdc_amount = self.config.size
+            else:
+                usdc_amount = self._live_balance * self.config.bet_fraction
+            size = usdc_amount / current_price
 
         buy_price = min(current_price + 0.02, 0.99)
 
@@ -384,7 +405,7 @@ class BaseStrategy(ABC):
             self._log_trade_stats()
             return True
         else:
-            self.log(f"BUY {side.upper()} @ {current_price:.4f} size={size:.2f}", "trade")
+            self.log(f"BUY {side.upper()} @ {current_price:.4f} size={size:.2f} (${usdc_amount:.2f})", "trade")
 
             result = await self.bot.place_order(
                 token_id=token_id,
@@ -402,6 +423,8 @@ class BaseStrategy(ABC):
                     size=size,
                     order_id=result.order_id,
                 )
+                if self._live_balance > 0:
+                    self._live_balance -= usdc_amount
                 return True
             else:
                 self.log(f"Order failed: {result.message}", "error")
@@ -457,6 +480,8 @@ class BaseStrategy(ABC):
                 self.log(f"Sell order: {result.order_id} PnL: ${pnl:+.2f}", "success")
                 self.positions.close_position(position.id, realized_pnl=pnl)
                 self._record_trade(position, current_price, pnl)
+                if self._live_balance > 0:
+                    self._live_balance += position.size * current_price
                 return True
             else:
                 self.log(f"Sell failed: {result.message}", "error")
@@ -503,6 +528,8 @@ class BaseStrategy(ABC):
             pnl = position.get_pnl(last_price)
             if self.config.paper:
                 self._paper_balance += pnl
+            elif self._live_balance > 0:
+                self._live_balance += position.size * last_price
 
             self.log(
                 f"MARKET EXPIRED: closed {position.side.upper()} @ {last_price:.4f} "

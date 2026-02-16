@@ -457,6 +457,21 @@ class TradingBot:
             logger.error(f"Failed to cancel market orders: {e}")
             return OrderResult(success=False, message=str(e))
 
+    async def get_balance(self) -> float:
+        """
+        Get USDC balance from Polymarket account.
+
+        Returns:
+            USDC balance as float
+        """
+        try:
+            balance = await self._run_in_thread(self.clob_client.get_balance)
+            logger.debug(f"Balance: ${balance:.2f}")
+            return balance
+        except Exception as e:
+            logger.error(f"Failed to get balance: {e}")
+            return 0.0
+
     async def get_open_orders(self) -> List[Dict[str, Any]]:
         """
         Get all open orders.
