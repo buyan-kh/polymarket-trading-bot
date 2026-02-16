@@ -259,6 +259,42 @@ class FairValueStrategy(BaseStrategy):
             if success:
                 self._traded_this_market = True
 
+    def _close_positions_on_market_change(self, old_slug: str = "") -> None:
+        """Settle positions at binary outcome (0 or 1) based on BTC vs strike."""
+        positions = self.positions.get_all_positions()
+        if not positions:
+            return
+
+        btc_price = self._binance.get_price()
+        strike = self._strike_prices.get(old_slug, 0)
+
+        if btc_price > 0 and strike > 0:
+            winner = "up" if btc_price > strike else "down"
+        else:
+            winner = None
+
+        for position in positions:
+            if winner:
+                settle_price = 1.00 if position.side == winner else 0.00
+            else:
+                # Can't determine winner, fall back to last price
+                settle_price = self.prices.get_current_price(position.side)
+                if settle_price <= 0:
+                    settle_price = position.entry_price
+
+            pnl = position.get_pnl(settle_price)
+            if self.config.paper:
+                self._paper_balance += pnl
+
+            result = "WON" if settle_price == 1.0 else "LOST"
+            self.log(
+                f"SETTLED: {position.side.upper()} @ {settle_price:.2f} ({result}) "
+                f"PnL: ${pnl:+.2f}",
+                "success" if pnl >= 0 else "warning"
+            )
+            self.positions.close_position(position.id, realized_pnl=pnl)
+            self._record_trade(position, settle_price, pnl)
+
     def on_market_change(self, old_slug: str, new_slug: str) -> None:
         """Handle market change - update strike price."""
         self._traded_this_market = False

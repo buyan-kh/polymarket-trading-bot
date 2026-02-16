@@ -41,6 +41,7 @@ credentials/
 
 # Logs and local data
 *.log
+aws_data/
 
 # Node / frontend artifacts (docs examples)
 node_modules/

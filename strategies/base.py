@@ -217,7 +217,7 @@ class BaseStrategy(ABC):
         def handle_market_change(old_slug: str, new_slug: str):  # pyright: ignore[reportUnusedFunction]
             self.log(f"Market changed: {old_slug} -> {new_slug}", "warning")
             # Close any open positions — old tokens are invalid in the new market
-            self._close_positions_on_market_change()
+            self._close_positions_on_market_change(old_slug)
             self.prices.clear()
             self.on_market_change(old_slug, new_slug)
 
@@ -483,11 +483,12 @@ class BaseStrategy(ABC):
 
         return remaining <= cutoff
 
-    def _close_positions_on_market_change(self) -> None:
+    def _close_positions_on_market_change(self, old_slug: str = "") -> None:
         """Close all open positions when market changes.
 
         Uses the last known price for each position's side.
         Positions can't carry over — the token IDs change with each market.
+        Subclasses can override for binary settlement (0 or 1).
         """
         positions = self.positions.get_all_positions()
         if not positions:
