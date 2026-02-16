@@ -28,13 +28,14 @@ class LeadLagBacktester(StrategyBacktester):
 
     def __init__(self, deviation: float = 0.03, tp: float = 0.03,
                  sl: float = 0.03, skip_start: float = 10.0,
-                 skip_end: float = 30.0, **kwargs):
+                 skip_end: float = 30.0, reverse: bool = False, **kwargs):
         super().__init__(**kwargs)
         self.deviation = deviation
         self.tp = tp
         self.sl = sl
         self.skip_start = skip_start
         self.skip_end = skip_end
+        self.reverse = reverse
 
     def on_snapshot(self, record: dict, state: MarketState) -> None:
         # Check TP/SL first
@@ -77,6 +78,10 @@ class LeadLagBacktester(StrategyBacktester):
                 side = "down"
                 gap = down_gap
 
+            # Reverse: buy the leader (momentum) instead of the lagger
+            if self.reverse:
+                side = "down" if side == "up" else "up"
+
             pos = self.buy(side, record,
                            tag=f"lag sum={price_sum:.3f} gap={gap:.3f}",
                            tp=self.tp, sl=self.sl)
@@ -97,6 +102,10 @@ class LeadLagBacktester(StrategyBacktester):
             else:
                 side = "down"
 
+            # Reverse: buy the MORE overpriced side (momentum)
+            if self.reverse:
+                side = "down" if side == "up" else "up"
+
             pos = self.buy(side, record,
                            tag=f"lag sum={price_sum:.3f}",
                            tp=self.tp, sl=self.sl)
@@ -110,6 +119,8 @@ def main():
                         help="Take profit (default: 0.03)")
     parser.add_argument("--sl", type=float, default=0.03,
                         help="Stop loss (default: 0.03)")
+    parser.add_argument("--reverse", action="store_true",
+                        help="Reverse: buy the leader (momentum) instead of the lagger")
     args = parser.parse_args()
 
     print_data_summary(args.data)
@@ -120,12 +131,14 @@ def main():
         devs = [0.02, 0.03, 0.05]
         tps = [0.02, 0.03, 0.05]
         sls = [0.02, 0.03, 0.05]
-        sweep_params = [{"deviation": d, "tp": tp, "sl": sl}
-                        for d, tp, sl in product(devs, tps, sls)]
+        reverses = [False, True]
+        sweep_params = [{"deviation": d, "tp": tp, "sl": sl, "reverse": rev}
+                        for d, tp, sl, rev in product(devs, tps, sls, reverses)]
         run_sweep(LeadLagBacktester, sweep_params, args.data, base_kwargs)
     else:
         bt = LeadLagBacktester(
-            deviation=args.deviation, tp=args.tp, sl=args.sl, **base_kwargs)
+            deviation=args.deviation, tp=args.tp, sl=args.sl,
+            reverse=args.reverse, **base_kwargs)
         start = time_mod.time()
         results = bt.run(args.data)
         elapsed = time_mod.time() - start

@@ -28,7 +28,8 @@ class BookImbalanceBacktester(StrategyBacktester):
 
     def __init__(self, max_tight: float = 0.02, min_wide: float = 0.04,
                  tp: float = 0.08, sl: float = 0.05,
-                 cooldown: float = 10.0, skip_end: float = 30.0, **kwargs):
+                 cooldown: float = 10.0, skip_end: float = 30.0,
+                 reverse: bool = False, **kwargs):
         super().__init__(**kwargs)
         self.max_tight = max_tight
         self.min_wide = min_wide
@@ -36,6 +37,7 @@ class BookImbalanceBacktester(StrategyBacktester):
         self.sl = sl
         self.cooldown = cooldown
         self.skip_end = skip_end
+        self.reverse = reverse
         self._last_trade_time: float = 0.0
 
     def on_snapshot(self, record: dict, state: MarketState) -> None:
@@ -73,7 +75,9 @@ class BookImbalanceBacktester(StrategyBacktester):
             tight_side = "down"
 
         if tight_side:
-            pos = self.buy(tight_side, record,
+            # Reverse: buy the wide-spread side instead
+            buy_side = ("down" if tight_side == "up" else "up") if self.reverse else tight_side
+            pos = self.buy(buy_side, record,
                            tag=f"imb u={up_spread:.2f} d={down_spread:.2f}",
                            tp=self.tp, sl=self.sl)
             if pos:
@@ -90,6 +94,8 @@ def main():
                         help="Take profit (default: 0.08)")
     parser.add_argument("--sl", type=float, default=0.05,
                         help="Stop loss (default: 0.05)")
+    parser.add_argument("--reverse", action="store_true",
+                        help="Reverse: buy the wide-spread side instead of tight")
     args = parser.parse_args()
 
     print_data_summary(args.data)
@@ -101,13 +107,14 @@ def main():
         wides = [0.03, 0.04, 0.05]
         tps = [0.05, 0.08, 0.10]
         sls = [0.03, 0.05, 0.08]
-        sweep_params = [{"max_tight": mt, "min_wide": mw, "tp": tp, "sl": sl}
-                        for mt, mw, tp, sl in product(tights, wides, tps, sls)]
+        reverses = [False, True]
+        sweep_params = [{"max_tight": mt, "min_wide": mw, "tp": tp, "sl": sl, "reverse": rev}
+                        for mt, mw, tp, sl, rev in product(tights, wides, tps, sls, reverses)]
         run_sweep(BookImbalanceBacktester, sweep_params, args.data, base_kwargs)
     else:
         bt = BookImbalanceBacktester(
             max_tight=args.max_tight, min_wide=args.min_wide,
-            tp=args.tp, sl=args.sl, **base_kwargs)
+            tp=args.tp, sl=args.sl, reverse=args.reverse, **base_kwargs)
         start = time_mod.time()
         results = bt.run(args.data)
         elapsed = time_mod.time() - start

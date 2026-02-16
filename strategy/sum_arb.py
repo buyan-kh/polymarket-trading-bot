@@ -54,13 +54,16 @@ class SumArbBacktester(StrategyBacktester):
             return
 
         # Cost to buy both sides (including entry fee)
+        from common import taker_fee_rate
         total_cost = (up_ask + down_ask)
-        cost_with_fee = total_cost / (1 - self.fee)  # actual USDC needed
+        up_fee = self.flat_fee if self.flat_fee is not None else taker_fee_rate(up_ask)
+        down_fee = self.flat_fee if self.flat_fee is not None else taker_fee_rate(down_ask)
+        cost_with_fee = up_ask / (1 - up_fee) + down_ask / (1 - down_fee)
 
-        # Settlement: winner pays 0.99, loser pays 0.01 -> gross = 1.00
-        # But we pay fee on exit too
-        settlement_gross = 1.00
-        settlement_net = settlement_gross * (1 - self.fee)
+        # Settlement: winner at 1.00, loser at 0.00 -> gross = 1.00
+        # Fee on exit at 1.00 is near zero
+        exit_fee = self.flat_fee if self.flat_fee is not None else taker_fee_rate(1.00)
+        settlement_net = 1.00 * (1 - exit_fee)
 
         profit_per_unit = settlement_net - cost_with_fee
 
@@ -82,7 +85,7 @@ class SumArbBacktester(StrategyBacktester):
                 up_mid = last.get("up", {}).get("mid", 0) if last.get("up") else 0
                 down_mid = last.get("down", {}).get("mid", 0) if last.get("down") else 0
                 winner = "up" if up_mid > down_mid else "down"
-                settle_price = 0.99 if pos.side == winner else 0.01
+                settle_price = 1.00 if pos.side == winner else 0.00
             else:
                 settle_price = pos.entry_price
             self.settle(pos, settle_price, t)
@@ -109,8 +112,9 @@ def main():
         start = time_mod.time()
         results = bt.run(args.data)
         elapsed = time_mod.time() - start
+        fee_str = f"{args.fee:.1%}" if args.fee is not None else "curve"
         bt.print_results(results,
-                         f"min_profit={args.min_profit} fee={args.fee:.1%}",
+                         f"min_profit={args.min_profit} fee={fee_str}",
                          verbose=not args.quiet)
         print(f"  Ran in {elapsed:.2f}s")
 

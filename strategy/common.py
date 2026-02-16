@@ -53,17 +53,28 @@ class MarketState:
     snapshot_count: int     # how many snapshots seen in this market
 
 
+def taker_fee_rate(price: float) -> float:
+    """Polymarket taker fee rate based on share price.
+
+    Fee curve: highest at 50% (1.56%), near zero at extremes.
+    Formula: rate = 0.0156 * (4 * p * (1-p))^2
+    Matches the official fee table for 15-min crypto markets.
+    """
+    p = max(0.0, min(1.0, price))
+    return 0.0156 * (4.0 * p * (1.0 - p)) ** 2
+
+
 class StrategyBacktester(ABC):
     """Base class for strategy backtests."""
 
     name: str = "strategy"
 
     def __init__(self, balance: float = 10.0, bet_fraction: float = 0.10,
-                 fee: float = 0.02, **kwargs):
+                 fee: Optional[float] = None, **kwargs):
         self.balance = balance
         self.start_balance = balance
         self.bet_fraction = bet_fraction
-        self.fee = fee
+        self.flat_fee = fee  # None = use real fee curve
 
         # State
         self.positions: List[BTPosition] = []
@@ -176,7 +187,8 @@ class StrategyBacktester(ABC):
         if usdc_amount < 0.01:
             return None
 
-        usdc_after_fee = usdc_amount * (1 - self.fee)
+        fee_rate = self.flat_fee if self.flat_fee is not None else taker_fee_rate(ask)
+        usdc_after_fee = usdc_amount * (1 - fee_rate)
         size = usdc_after_fee / ask
 
         pos = BTPosition(
@@ -218,7 +230,8 @@ class StrategyBacktester(ABC):
     def _close(self, pos: BTPosition, exit_price: float, t: float, result: str) -> BTTrade:
         """Internal close logic."""
         gross = pos.size * exit_price
-        fee = gross * self.fee
+        fee_rate = self.flat_fee if self.flat_fee is not None else taker_fee_rate(exit_price)
+        fee = gross * fee_rate
         net_proceeds = gross - fee
         pnl = net_proceeds - pos.cost
 
@@ -307,7 +320,8 @@ def base_argparser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("data", help="Path to recorded JSONL data file")
     parser.add_argument("--balance", type=float, default=10.0)
     parser.add_argument("--bet", type=float, default=0.10, help="Bet fraction (default: 0.10)")
-    parser.add_argument("--fee", type=float, default=0.02, help="Fee per side (default: 0.02)")
+    parser.add_argument("--fee", type=float, default=None,
+                        help="Flat fee override (default: use Polymarket fee curve)")
     parser.add_argument("--sweep", action="store_true", help="Sweep parameter combinations")
     parser.add_argument("--quiet", action="store_true", help="Hide trade log")
     return parser

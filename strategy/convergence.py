@@ -89,7 +89,7 @@ class ConvergenceBacktester(StrategyBacktester):
                 up_mid = last.get("up", {}).get("mid", 0) if last.get("up") else 0
                 down_mid = last.get("down", {}).get("mid", 0) if last.get("down") else 0
                 winner = "up" if up_mid > down_mid else "down"
-                settle_price = 0.99 if pos.side == winner else 0.01
+                settle_price = 1.00 if pos.side == winner else 0.00
             else:
                 settle_price = pos.entry_price
             self.settle(pos, settle_price, t)

@@ -28,6 +28,8 @@ from typing import Optional, List, Dict
 from collections import deque
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "strategy"))
+from common import taker_fee_rate
 
 
 @dataclass
@@ -65,7 +67,7 @@ class BacktestConfig:
     lookback_seconds: int = 10
     take_profit: float = 0.10
     stop_loss: float = 0.05
-    fee: float = 0.02
+    fee: Optional[float] = None
     no_trade_seconds: int = 30
     duration_minutes: int = 5
 
@@ -226,7 +228,8 @@ class Backtester:
 
             ask = data["ask"]
             usdc_amount = self.balance * self.config.bet_fraction
-            usdc_after_fee = usdc_amount * (1 - self.config.fee)
+            fee_rate = self.config.fee if self.config.fee is not None else taker_fee_rate(ask)
+            usdc_after_fee = usdc_amount * (1 - fee_rate)
             size = usdc_after_fee / ask
 
             self.position = BTPosition(
@@ -258,7 +261,8 @@ class Backtester:
         """Close position at bid price with fee."""
         pos = self.position
         gross = pos.size * exit_bid
-        fee = gross * self.config.fee
+        fee_rate = self.config.fee if self.config.fee is not None else taker_fee_rate(exit_bid)
+        fee = gross * fee_rate
         net_proceeds = gross - fee
         pnl = net_proceeds - pos.cost
 
@@ -282,10 +286,9 @@ class Backtester:
     def _force_close(self, t: float) -> None:
         """Force close at entry price (market expired)."""
         pos = self.position
-        # Close at entry — flat (minus fees on both sides)
-        fee_cost = pos.cost * self.config.fee  # already paid on entry
         exit_gross = pos.size * pos.entry_price
-        exit_fee = exit_gross * self.config.fee
+        fee_rate = self.config.fee if self.config.fee is not None else taker_fee_rate(pos.entry_price)
+        exit_fee = exit_gross * fee_rate
         pnl = exit_gross - exit_fee - pos.cost
 
         self.balance += pnl
@@ -336,7 +339,8 @@ def print_results(results: dict, config: BacktestConfig, verbose: bool = True) -
             hold = f"{t.hold:.0f}s" if t.hold < 60 else f"{t.hold / 60:.1f}m"
             print(f"  {t.n:>3}  {t.side:4}  {t.entry:>8.4f}  {t.exit:>8.4f}  ${t.pnl:>+8.2f}  {hold:>6}  {'  ' + t.result:>6}  ${t.balance:>9.2f}")
 
-    print(f"\n  Results (drop={config.drop_threshold:.2f} tp={config.take_profit:.2f} sl={config.stop_loss:.2f} fee={config.fee:.0%}):")
+    fee_str = f"{config.fee:.0%}" if config.fee is not None else "curve"
+    print(f"\n  Results (drop={config.drop_threshold:.2f} tp={config.take_profit:.2f} sl={config.stop_loss:.2f} fee={fee_str}):")
     print(f"    Trades: {results['trades']} (W:{results['wins']} L:{results['losses']} X:{results['expired']})")
     print(f"    Win rate: {results['win_rate']:.1f}%")
     print(f"    PnL: ${results['total_pnl']:+.2f} ({results['return_pct']:+.1f}%)")
@@ -396,7 +400,7 @@ def main():
     parser.add_argument("--lookback", type=int, default=10)
     parser.add_argument("--tp", type=float, default=0.10, help="Take profit (default: 0.10)")
     parser.add_argument("--sl", type=float, default=0.05, help="Stop loss (default: 0.05)")
-    parser.add_argument("--fee", type=float, default=0.02, help="Fee per trade (default: 0.02)")
+    parser.add_argument("--fee", type=float, default=None, help="Flat fee override (default: Polymarket fee curve)")
     parser.add_argument("--no-trade", type=int, default=30, help="No-trade zone seconds (default: 30)")
     parser.add_argument("--sweep", action="store_true", help="Sweep all parameter combinations")
     parser.add_argument("--quiet", action="store_true", help="Hide individual trade log")
