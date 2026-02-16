@@ -156,6 +156,12 @@ class FairValueStrategy(BaseStrategy):
                     pass
                 self._strike_prices[slug] = btc_price
                 self.log(f"Strike set: ${btc_price:,.2f} for {slug}", "info")
+                # Debug: log token ID mapping and initial prices
+                self.log(
+                    f"Token mapping: UP={market.up_token[:16]}... DOWN={market.down_token[:16]}... "
+                    f"Prices: {market.prices}",
+                    "info"
+                )
 
     async def on_book_update(self, snapshot: OrderbookSnapshot) -> None:
         """Handle orderbook update."""

@@ -215,7 +215,7 @@ class BaseStrategy(ABC):
                 self._live_balance = balance
                 self.log(f"Balance: ${balance:.2f} USDC", "success")
             else:
-                self.log("Could not fetch balance. Set --size or --balance.", "error")
+                self.log("API returned $0. Use --balance to set manually.", "error")
                 return False
 
         # Register callbacks on market manager
@@ -382,7 +382,7 @@ class BaseStrategy(ABC):
                 usdc_amount = self._live_balance * self.config.bet_fraction
             size = usdc_amount / current_price
 
-        buy_price = min(current_price + 0.02, 0.99)
+        buy_price = min(round(current_price + 0.02, 2), 0.99)
 
         if self.config.paper:
             # Paper trade — simulate fill at ask
@@ -449,7 +449,7 @@ class BaseStrategy(ABC):
         else:
             fill_price = current_price
 
-        sell_price = max(current_price - 0.02, 0.01)
+        sell_price = max(round(current_price - 0.02, 2), 0.01)
         pnl = position.get_pnl(fill_price)
 
         if self.config.paper:

@@ -148,10 +148,17 @@ class ApiClient(ThreadLocalSessionMixin):
                         params=params, timeout=self.timeout
                     )
                 elif method.upper() == "POST":
-                    response = session.post(
-                        url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
-                    )
+                    if isinstance(data, str):
+                        # Pre-serialized JSON (signature must match exact bytes)
+                        response = session.post(
+                            url, headers=request_headers,
+                            data=data, params=params, timeout=self.timeout
+                        )
+                    else:
+                        response = session.post(
+                            url, headers=request_headers,
+                            json=data, params=params, timeout=self.timeout
+                        )
                 elif method.upper() == "DELETE":
                     response = session.delete(
                         url, headers=request_headers,
@@ -160,6 +167,8 @@ class ApiClient(ThreadLocalSessionMixin):
                 else:
                     raise ApiError(f"Unsupported method: {method}")
 
+                if response.status_code >= 400:
+                    print(f"  [DEBUG] API {response.status_code}: {response.text[:500]}")
                 response.raise_for_status()
                 return response.json() if response.text else {}
 
@@ -217,6 +226,7 @@ class ClobClient(ApiClient):
         self.chain_id = chain_id
         self.signature_type = signature_type
         self.funder = funder
+        self.signer_address = ""  # EOA address for POLY_ADDRESS header
         self.api_creds = api_creds
         self.builder_creds = builder_creds
 
@@ -282,7 +292,7 @@ class ClobClient(ApiClient):
                 ).hexdigest()
 
             headers.update({
-                "POLY_ADDRESS": self.funder,
+                "POLY_ADDRESS": self.signer_address or self.funder,
                 "POLY_API_KEY": self.api_creds.api_key,
                 "POLY_TIMESTAMP": timestamp,
                 "POLY_PASSPHRASE": self.api_creds.passphrase,
@@ -362,7 +372,7 @@ class ClobClient(ApiClient):
 
     def create_or_derive_api_key(self, signer: "OrderSigner", nonce: int = 0) -> ApiCredentials:
         """
-        Create API credentials if not exists, otherwise derive them.
+        Derive API credentials if they exist, otherwise create them.
 
         Args:
             signer: OrderSigner instance with private key
@@ -372,9 +382,9 @@ class ClobClient(ApiClient):
             ApiCredentials with api_key, secret, and passphrase
         """
         try:
-            return self.create_api_key(signer, nonce)
-        except Exception:
             return self.derive_api_key(signer, nonce)
+        except Exception:
+            return self.create_api_key(signer, nonce)
 
     def set_api_creds(self, creds: ApiCredentials) -> None:
         """Set API credentials for authenticated requests."""
@@ -411,6 +421,36 @@ class ClobClient(ApiClient):
             "/price",
             params={"token_id": token_id}
         )
+
+    def get_fee_rate_bps(self, token_id: str) -> int:
+        """Get the fee rate in basis points for a token's market."""
+        try:
+            result = self._request("GET", "/fee-rate", params={"token_id": token_id})
+            if isinstance(result, dict):
+                return result.get("base_fee", 0)
+            return int(result) if result else 0
+        except Exception:
+            return 0
+
+    def get_tick_size(self, token_id: str) -> str:
+        """Get the tick size for a token's market."""
+        try:
+            result = self._request("GET", "/tick-size", params={"token_id": token_id})
+            if isinstance(result, dict):
+                return str(result.get("minimum_tick_size", "0.01"))
+            return str(result) if result else "0.01"
+        except Exception:
+            return "0.01"
+
+    def get_neg_risk(self, token_id: str) -> bool:
+        """Check if a token's market uses neg risk exchange."""
+        try:
+            result = self._request("GET", "/neg-risk", params={"token_id": token_id})
+            if isinstance(result, dict):
+                return bool(result.get("neg_risk", False))
+            return bool(result) if result else False
+        except Exception:
+            return False
 
     def get_open_orders(self) -> List[Dict[str, Any]]:
         """
@@ -495,12 +535,21 @@ class ClobClient(ApiClient):
                 "GET",
                 endpoint,
                 headers=headers,
-                params={"asset_type": "COLLATERAL"},
+                params={
+                    "asset_type": "COLLATERAL",
+                    "signature_type": self.signature_type,
+                },
             )
             if isinstance(result, dict):
-                return float(result.get("balance", 0)) / 1e6  # USDC has 6 decimals
+                raw = result.get("balance", 0)
+                balance = float(raw)
+                # If balance looks like raw units (> 1000 for what should be small), divide by 1e6
+                if balance > 10_000:
+                    balance = balance / 1e6
+                return balance
             return 0.0
-        except Exception:
+        except Exception as e:
+            print(f"  [DEBUG] balance error: {e}")
             return 0.0
 
     def post_order(
@@ -521,24 +570,29 @@ class ClobClient(ApiClient):
         endpoint = "/order"
 
         # Build request body
+        # "owner" must be the L2 API key, not the wallet address
+        owner = self.api_creds.api_key if self.api_creds else self.funder
         body = {
             "order": signed_order.get("order", signed_order),
-            "owner": self.funder,
+            "owner": owner,
             "orderType": order_type,
         }
 
         # Add signature
         if "signature" in signed_order:
-            body["signature"] = signed_order["signature"]
+            body["order"]["signature"] = signed_order["signature"]
+        if "signer" in signed_order:
+            body["order"]["signer"] = signed_order["signer"]
 
         body_json = json.dumps(body, separators=(',', ':'))
+        print(f"  [DEBUG] POST /order body: {body_json[:500]}")
         headers = self._build_headers("POST", endpoint, body_json)
 
         return self._request(
             "POST",
             endpoint,
-            data=body,
-            headers=headers
+            data=body_json,
+            headers=headers,
         )
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
@@ -716,8 +770,8 @@ class RelayerClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
-            headers=headers
+            data=body_json,
+            headers=headers,
         )
 
     def approve_usdc(
@@ -749,8 +803,8 @@ class RelayerClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
-            headers=headers
+            data=body_json,
+            headers=headers,
         )
 
     def approve_token(
@@ -785,6 +839,6 @@ class RelayerClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
-            headers=headers
+            data=body_json,
+            headers=headers,
         )

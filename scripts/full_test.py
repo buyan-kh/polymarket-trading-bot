@@ -140,7 +140,7 @@ def test_signer_module(private_key: str, expected_address: str) -> bool:
     print_header("2. Testing Signer Module (signer.py)")
 
     try:
-        from src.signer import OrderSigner, Order
+        from src.signer import OrderSigner, OrderData as Order
 
         # Create signer
         signer = OrderSigner(private_key)

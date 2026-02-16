@@ -110,6 +110,12 @@ def main():
         help="Paper trading mode with starting balance in USDC (e.g. --paper 10)"
     )
     parser.add_argument(
+        "--balance",
+        type=float,
+        default=0.0,
+        help="Manual USDC balance (if auto-fetch fails)"
+    )
+    parser.add_argument(
         "--bet-fraction",
         type=float,
         default=0.10,
@@ -165,7 +171,7 @@ def main():
         paper=is_paper,
         paper_balance=args.paper if is_paper else 10.0,
         bet_fraction=args.bet_fraction,
-        live_balance=0.0,  # Auto-fetched from Polymarket on startup
+        live_balance=args.balance,
         edge_threshold=args.edge,
         vol_window=args.vol_window,
         kelly_frac=args.kelly,

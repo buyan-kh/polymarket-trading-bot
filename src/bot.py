@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .config import Config, BuilderConfig
-from .signer import OrderSigner, Order
+from .signer import OrderSigner, OrderData as Order
 from .client import ClobClient, RelayerClient, ApiCredentials
 from .crypto import KeyManager, CryptoError, InvalidPasswordError
 
@@ -200,6 +200,10 @@ class TradingBot:
         # Initialize API clients
         self._init_clients()
 
+        # Set signer address for L2 auth headers
+        if self.signer and self.clob_client:
+            self.clob_client.signer_address = self.signer.address
+
         # Auto-derive API credentials if we have a signer but no API creds
         if self.signer and not self._api_creds:
             self._derive_api_creds()
@@ -292,7 +296,7 @@ class TradingBot:
         size: float,
         side: str,
         order_type: str = "GTC",
-        fee_rate_bps: int = 0
+        fee_rate_bps: int = -1
     ) -> OrderResult:
         """
         Place a limit order.
@@ -303,7 +307,7 @@ class TradingBot:
             size: Number of shares
             side: 'BUY' or 'SELL'
             order_type: Order type (GTC, GTD, FOK)
-            fee_rate_bps: Fee rate in basis points
+            fee_rate_bps: Fee rate in basis points (-1 = auto-fetch from API)
 
         Returns:
             OrderResult with order status
@@ -311,6 +315,18 @@ class TradingBot:
         signer = self.require_signer()
 
         try:
+            # Auto-resolve market parameters from CLOB API
+            if fee_rate_bps < 0:
+                fee_rate_bps = await self._run_in_thread(
+                    self.clob_client.get_fee_rate_bps, token_id
+                )
+            neg_risk = await self._run_in_thread(
+                self.clob_client.get_neg_risk, token_id
+            )
+            tick_size = await self._run_in_thread(
+                self.clob_client.get_tick_size, token_id
+            )
+
             # Create order
             order = Order(
                 token_id=token_id,
@@ -318,7 +334,11 @@ class TradingBot:
                 size=size,
                 side=side,
                 maker=self.config.safe_address,
+                nonce=0,
                 fee_rate_bps=fee_rate_bps,
+                signature_type=self.config.clob.signature_type,
+                neg_risk=neg_risk,
+                tick_size=tick_size,
             )
 
             # Sign order

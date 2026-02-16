@@ -14,7 +14,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.signer import OrderSigner, Order, SignerError
+from src.signer import OrderSigner, OrderData as Order, SignerError
 
 
 class TestOrderSigner:
@@ -81,8 +81,8 @@ class TestOrderSigner:
         assert "signer" in result
 
         assert result["order"]["tokenId"] == "1234567890123456789"
-        assert result["order"]["price"] == 0.65
-        assert result["order"]["size"] == 10.0
+        assert result["order"]["makerAmount"] == "6500000"
+        assert result["order"]["takerAmount"] == "10000000"
         assert result["order"]["side"] == "BUY"
 
     def test_sign_order_dict_sell_side(self):
@@ -108,7 +108,7 @@ class TestOrderSigner:
             nonce=12345
         )
 
-        assert result["order"]["nonce"] == 12345
+        assert result["order"]["nonce"] == "12345"
 
     def test_sign_order_with_fee(self):
         """Test signing order with fee rate."""
@@ -121,7 +121,7 @@ class TestOrderSigner:
             fee_rate_bps=100  # 1%
         )
 
-        assert result["order"]["feeRateBps"] == 100
+        assert result["order"]["feeRateBps"] == "100"
 
     def test_sign_order_generates_valid_signature(self):
         """Test that signature is valid format."""
@@ -213,8 +213,8 @@ class TestOrder:
                 maker="0x1234567890123456789012345678901234567890"
             )
 
-    def test_order_uses_timestamp_as_nonce(self):
-        """Test that nonce defaults to timestamp."""
+    def test_order_nonce_defaults_to_zero(self):
+        """Test that nonce defaults to 0."""
         order = Order(
             token_id="1234567890123456789",
             price=0.65,
@@ -223,11 +223,10 @@ class TestOrder:
             maker="0x1234567890123456789012345678901234567890"
         )
 
-        assert order.nonce is not None
-        assert isinstance(order.nonce, int)
+        assert order.nonce == 0
 
     def test_order_calculates_maker_amount(self):
-        """Test that maker_amount is calculated correctly."""
+        """Test that maker_amount is calculated correctly (BUY: price * size * 1e6)."""
         order = Order(
             token_id="1234567890123456789",
             price=0.65,
@@ -236,12 +235,11 @@ class TestOrder:
             maker="0x1234567890123456789012345678901234567890"
         )
 
-        # maker_amount = size * price * 1e6
-        expected = str(int(10.0 * 0.65 * 1_000_000))
-        assert order.maker_amount == expected
+        # BUY: maker_amount = size * price * 1e6 (int, not string)
+        assert order.maker_amount == 6500000
 
     def test_order_calculates_taker_amount(self):
-        """Test that taker_amount is calculated correctly."""
+        """Test that taker_amount is calculated correctly (BUY: size * 1e6)."""
         order = Order(
             token_id="1234567890123456789",
             price=0.65,
@@ -250,9 +248,8 @@ class TestOrder:
             maker="0x1234567890123456789012345678901234567890"
         )
 
-        # taker_amount = size * 1e6
-        expected = str(int(10.0 * 1_000_000))
-        assert order.taker_amount == expected
+        # BUY: taker_amount = size * 1e6 (int, not string)
+        assert order.taker_amount == 10000000
 
     def test_order_side_value_buy(self):
         """Test that BUY side has correct numeric value."""

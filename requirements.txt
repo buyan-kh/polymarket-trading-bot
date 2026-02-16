@@ -8,6 +8,7 @@
 # Ethereum libraries for wallet operations
 web3>=6.0.0                    # Polygon RPC interactions
 eth-account>=0.5.0             # Wallet and signing operations
+poly-eip712-structs>=0.0.1     # EIP-712 struct definitions (Polymarket order signing)
 
 # Cryptography for private key encryption
 cryptography>=41.0.0           # PBKDF2 + Fernet encryption

@@ -31,7 +31,7 @@ Modules:
 
 # Core classes
 from .bot import TradingBot, OrderResult
-from .signer import OrderSigner, Order
+from .signer import OrderSigner, OrderData as Order
 from .client import ApiClient, ClobClient, RelayerClient
 from .crypto import KeyManager
 from .config import Config, BuilderConfig
