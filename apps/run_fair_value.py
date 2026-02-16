@@ -57,8 +57,8 @@ def main():
     parser.add_argument(
         "--size",
         type=float,
-        default=5.0,
-        help="Trade size in USDC (default: 5.0)"
+        default=0.0,
+        help="Fixed trade size in USDC (default: 0 = use --bet-fraction of account balance)"
     )
     parser.add_argument(
         "--edge",
