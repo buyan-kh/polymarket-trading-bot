@@ -35,6 +35,7 @@ logging.getLogger("src.bot").setLevel(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.market_manager import MarketManager
+from lib.binance_feed import BinancePriceFeed
 from src.websocket_client import OrderbookSnapshot
 
 
@@ -51,6 +52,9 @@ class DataRecorder:
             coin=coin,
             duration_minutes=duration,
         )
+
+        # Binance price feed for BTC spot price
+        self._binance = BinancePriceFeed(symbol="btcusdt")
 
         self._file = None
         self._record_count = 0
@@ -79,6 +83,13 @@ class DataRecorder:
             "duration": self.duration,
             "sample_interval": self.sample_interval,
         })
+
+        # Connect Binance feed
+        if not await self._binance.connect():
+            print("Warning: Binance feed failed, recording without BTC price")
+        else:
+            await self._binance.wait_for_price(timeout=10.0)
+            print(f"  Binance connected: BTC = ${self._binance.get_price():,.2f}")
 
         # Register callbacks
         @self.manager.on_book_update
@@ -119,6 +130,11 @@ class DataRecorder:
             "slug": market.slug,
             "end": market.end_date,
         }
+
+        # Embed BTC spot price from Binance
+        btc = self._binance.get_price()
+        if btc > 0:
+            record["btc"] = round(btc, 2)
 
         for side in ["up", "down"]:
             ob = self.manager.get_orderbook(side)
@@ -180,6 +196,7 @@ class DataRecorder:
             })
             self._file.close()
 
+        await self._binance.disconnect()
         await self.manager.stop()
 
         elapsed = time.time() - self._start_time

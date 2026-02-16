@@ -70,11 +70,13 @@ class StrategyBacktester(ABC):
     name: str = "strategy"
 
     def __init__(self, balance: float = 10.0, bet_fraction: float = 0.10,
-                 fee: Optional[float] = None, **kwargs):
+                 fee: Optional[float] = None, max_bet: Optional[float] = None,
+                 **kwargs):
         self.balance = balance
         self.start_balance = balance
         self.bet_fraction = bet_fraction
         self.flat_fee = fee  # None = use real fee curve
+        self.max_bet = max_bet  # Cap bet size in USDC (None = unlimited)
 
         # State
         self.positions: List[BTPosition] = []
@@ -184,6 +186,8 @@ class StrategyBacktester(ABC):
             return None
 
         usdc_amount = self.balance * self.bet_fraction
+        if self.max_bet is not None:
+            usdc_amount = min(usdc_amount, self.max_bet)
         if usdc_amount < 0.01:
             return None
 
@@ -322,6 +326,8 @@ def base_argparser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--bet", type=float, default=0.10, help="Bet fraction (default: 0.10)")
     parser.add_argument("--fee", type=float, default=None,
                         help="Flat fee override (default: use Polymarket fee curve)")
+    parser.add_argument("--max-bet", type=float, default=None,
+                        help="Max bet size in USDC (default: unlimited)")
     parser.add_argument("--sweep", action="store_true", help="Sweep parameter combinations")
     parser.add_argument("--quiet", action="store_true", help="Hide trade log")
     return parser

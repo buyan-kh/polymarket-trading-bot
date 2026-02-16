@@ -125,14 +125,15 @@ class FairValueBacktester(StrategyBacktester):
         self._data_loaded: bool = False
 
     def _load_binance_data(self, data_path: str) -> None:
-        """Pre-fetch Binance klines for the full data time range."""
+        """Load Binance price data - from embedded JSONL or REST API fallback."""
         if self._data_loaded:
             return
 
-        # Scan JSONL to find time range and market slugs
+        # Scan JSONL to find time range, slugs, and embedded BTC prices
         first_t = None
         last_t = None
         slugs = set()
+        embedded_prices = []  # (timestamp, price) from "btc" field
 
         with open(data_path) as f:
             for line in f:
@@ -145,24 +146,46 @@ class FairValueBacktester(StrategyBacktester):
                 slug = record.get("slug", "")
                 if slug:
                     slugs.add(slug)
+                # Collect embedded BTC prices
+                btc = record.get("btc")
+                if btc:
+                    embedded_prices.append((int(t), float(btc)))
 
         if not first_t or not last_t:
             return
 
-        # Add buffer before first timestamp (for vol warmup)
-        buffer = max(self.vol_window + 60, 600)
-        start_ts = first_t - buffer
-        end_ts = last_t + 10
+        if embedded_prices:
+            # Use embedded prices from recorder (real 1s data)
+            print(f"  Using embedded BTC prices: {len(embedded_prices)} data points")
+            self._btc_prices = {ts: p for ts, p in embedded_prices}
 
-        print(f"  Fetching Binance 1s klines: {int(end_ts - start_ts)}s range...")
-        klines = fetch_klines_range("BTCUSDT", start_ts, end_ts, interval="1s")
-        print(f"  Got {len(klines)} klines")
+            # Build kline-like tuples for vol computation: (ts, o, h, l, c, v)
+            klines = [(ts, p, p, p, p, 0.0) for ts, p in embedded_prices]
+            klines.sort(key=lambda x: x[0])
 
-        self._btc_prices = build_price_lookup(klines)
+            # Deduplicate by timestamp (keep last price per second)
+            deduped = {}
+            for k in klines:
+                deduped[k[0]] = k
+            klines = sorted(deduped.values(), key=lambda x: x[0])
 
-        # Pre-compute rolling vol
-        print(f"  Computing rolling vol (window={self.vol_window}s)...")
-        self._vol_lookup = compute_rolling_vol(klines, self.vol_window)
+            print(f"  Computing rolling vol (window={self.vol_window}s) from {len(klines)} bars...")
+            self._vol_lookup = compute_rolling_vol(klines, self.vol_window)
+        else:
+            # Fallback: fetch from Binance REST API (old data files)
+            buffer = max(self.vol_window + 60, 600)
+            start_ts = first_t - buffer
+            end_ts = last_t + 10
+
+            print(f"  No embedded BTC prices — fetching from Binance REST API...")
+            print(f"  Fetching Binance 1s klines: {int(end_ts - start_ts)}s range...")
+            klines = fetch_klines_range("BTCUSDT", start_ts, end_ts, interval="1s")
+            print(f"  Got {len(klines)} klines")
+
+            self._btc_prices = build_price_lookup(klines)
+
+            print(f"  Computing rolling vol (window={self.vol_window}s)...")
+            self._vol_lookup = compute_rolling_vol(klines, self.vol_window)
 
         # Extract strike prices from slugs
         for slug in slugs:
@@ -316,7 +339,8 @@ def main():
 
     print_data_summary(args.data)
 
-    base_kwargs = dict(balance=args.balance, bet_fraction=args.bet, fee=args.fee)
+    base_kwargs = dict(balance=args.balance, bet_fraction=args.bet, fee=args.fee,
+                       max_bet=args.max_bet)
 
     if args.sweep:
         edges = [0.02, 0.03, 0.05, 0.07, 0.10]
